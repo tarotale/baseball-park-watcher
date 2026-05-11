@@ -3,64 +3,64 @@ from playwright.sync_api import sync_playwright
 from linebot import LineBotApi
 from linebot.models import TextSendMessage
 
+# GitHub Secretsから環境変数を読み込む
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
 USER_ID = os.environ.get("USER_ID")
 
 def check_park_availability():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(viewport={'width': 1280, 'height': 1000})
+        # 画面サイズを大きめにして要素が隠れないようにする
+        context = browser.new_context(viewport={'width': 1920, 'height': 1080})
         page = context.new_page()
 
         try:
-            print("1. サイトにアクセス中...")
+            print("1. トップページへアクセス...")
             page.goto("https://kouen.sports.metro.tokyo.lg.jp/web/index.jsp", wait_until="networkidle")
 
-            print("2. 野球を選択中...")
-            page.select_option("#purpose-home", value="1000_1000")
-            page.wait_for_timeout(1000)
+            print("2. 条件をセットして検索実行...")
+            page.evaluate("""() => {
+                document.querySelector('#purpose-home').value = '1000_1000'; // 野球
+                changePurpose(document.form1, false);
+            }""")
+            page.wait_for_timeout(1500)
 
-            print("3. 芝公園を選択中...")
-            page.select_option("#bname-home", value="1010")
-            page.wait_for_timeout(500)
+            page.evaluate("""() => {
+                document.querySelector('#bname-home').value = '1010'; // 芝公園
+                doSearchHome(document.form1, gRsvWOpeInstSrchVacantAction);
+            }""")
+            
+            print("3. 検索結果ページの読み込みを待機...")
+            page.wait_for_load_state("networkidle")
+            # カレンダーの枠（月表示のボタン）が出るまで待機
+            page.wait_for_selector(".collapse-btn-right", timeout=10000)
 
-            print("4. 検索ボタンをクリック...")
-            # ページ遷移を確実に待つためにclickとwait_for_navigationを併用
-            with page.expect_navigation(wait_until="networkidle"):
-                page.click("#btn-go")
+            print("4. 月表示カレンダーを展開...")
+            # data-target="#monthly" を持つボタンをクリック
+            page.click("div[data-target='#monthly']")
+            
+            print("   - カレンダーデータ（Ajax）の読み込みを待機...")
+            # カレンダー内の「空きアイコン」が読み込まれるまで待機
+            # セレクタをtd内の画像に絞って確実に待ちます
+            page.wait_for_selector("#month-info img.calendar-status", timeout=15000)
 
-            print("5. カレンダー展開チェック...")
-            # カレンダーが隠れている場合（スマホ版表示など）を考慮し、展開ボタンがあれば押す
-            toggle_btn = page.query_selector(".span-icon-down")
-            if toggle_btn:
-                toggle_btn.click()
-                print("   - 展開ボタンをクリックしました")
-                page.wait_for_timeout(2000)
-
-            # アイコンが出るまでじっくり待機
-            print("6. 空きアイコンの読み込みを待機中...")
-            try:
-                page.wait_for_selector(".calendar-status", timeout=15000)
-            except:
-                print("   - 警告: アイコンが時間内に見つかりませんでした")
-
-            # デバッグ用：今の画面の状態をログに出す（Actionのログで文字として見れます）
-            print(f"現在表示されている月: {page.inner_text('#month-head') if page.query_selector('#month-head') else '不明'}")
+            print(f"5. 解析中... 月: {page.inner_text('#month-head')}")
 
             available_days = []
-            cells = page.query_selector_all("td[id^='month_']")
-            print(f"解析対象のセル数: {len(cells)}")
+            # 月表示カレンダー(#month-info)の中にある日付セルをスキャン
+            cells = page.query_selector_all("#month-info td[id^='month_']")
+            print(f"   - 解析対象セル数: {len(cells)}")
 
             for cell in cells:
-                # すべての画像タグをチェックして、altに「空き」が含まれるか確認
-                imgs = cell.query_selector_all("img")
-                for img in imgs:
-                    alt_text = img.get_attribute("alt") or ""
-                    if "空き" in alt_text:
-                        date_raw = cell.get_attribute("id").replace("month_", "")
-                        formatted_date = f"{date_raw[4:6]}/{date_raw[6:]}"
-                        available_days.append(formatted_date)
-                        print(f"   - 発見: {formatted_date} ({alt_text})")
+                # セル内に「空き」または「一部空き」の画像があるか
+                img = cell.query_selector("img[alt*='空き']")
+                if img:
+                    alt_text = img.get_attribute("alt")
+                    date_raw = cell.get_attribute("id").replace("month_", "")
+                    # 20260529 -> 05/29
+                    formatted_date = f"{date_raw[4:6]}/{date_raw[6:]}"
+                    available_days.append(formatted_date)
+                    print(f"   - 【発見】: {formatted_date} ({alt_text})")
 
             return available_days
 
@@ -71,11 +71,18 @@ def check_park_availability():
             browser.close()
 
 if __name__ == "__main__":
-    found_days = check_park_availability()
-    if found_days:
-        date_list = "、".join(sorted(list(set(found_days))))
-        message = f"【芝公園 野球場】空き発見！\n対象日：{date_list}\nhttps://kouen.sports.metro.tokyo.lg.jp/web/index.jsp"
-        LineBotApi(LINE_CHANNEL_ACCESS_TOKEN).push_message(USER_ID, TextSendMessage(text=message))
+    if not LINE_CHANNEL_ACCESS_TOKEN or not USER_ID:
+        print("設定エラー: LINEのトークンまたはユーザーIDがSecretsに登録されていません。")
     else:
-        # デバッグ用に「空きなし」時もログを出す
-        print("最終結果: 空きは見つかりませんでした。")
+        found_days = check_park_availability()
+        if found_days:
+            # 重複を除去してソート
+            unique_days = sorted(list(set(found_days)))
+            date_list = "、".join(unique_days)
+            
+            message = f"【芝公園 野球場】空きが出ました！\n\n対象日：{date_list}\n\n予約はこちら：\nhttps://kouen.sports.metro.tokyo.lg.jp/web/index.jsp"
+            
+            LineBotApi(LINE_CHANNEL_ACCESS_TOKEN).push_message(USER_ID, TextSendMessage(text=message))
+            print(f"LINE送信完了: {date_list}")
+        else:
+            print("最終結果: 現在、空きはありません。")
