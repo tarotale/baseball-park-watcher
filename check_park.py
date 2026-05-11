@@ -1,86 +1,81 @@
 import os
-import time
 from playwright.sync_api import sync_playwright
 from linebot import LineBotApi
 from linebot.models import TextSendMessage
 
-# GitHub Secretsから環境変数を読み込む
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
 USER_ID = os.environ.get("USER_ID")
 
 def check_park_availability():
     with sync_playwright() as p:
-        # ブラウザを起動（ヘッドレスモード）
         browser = p.chromium.launch(headless=True)
-        # サイトに弾かれないよう一般的なブラウザのふりをする
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        )
+        context = browser.new_context(viewport={'width': 1280, 'height': 1000})
         page = context.new_page()
 
         try:
-            # 1. 予約システムトップページへ
+            print("1. サイトにアクセス中...")
             page.goto("https://kouen.sports.metro.tokyo.lg.jp/web/index.jsp", wait_until="networkidle")
 
-            # 2. 目的「野球」を選択
+            print("2. 野球を選択中...")
             page.select_option("#purpose-home", value="1000_1000")
-            # 選択後の連動プルダウンの更新を待つ
             page.wait_for_timeout(1000)
 
-            # 3. 施設「芝公園」を選択
+            print("3. 芝公園を選択中...")
             page.select_option("#bname-home", value="1010")
+            page.wait_for_timeout(500)
 
-            # 4. 検索ボタンをクリック
-            page.click("#btn-go")
-            
-            # 5. カレンダーの読み込み待ち（ここが重要）
-            # 検索直後のページ遷移と、その後のアイコン描画の両方を待ちます
-            page.wait_for_load_state("networkidle")
-            
-            # アイコン（calendar-statusクラス）が最低1つ表示されるまで最大15秒待機
+            print("4. 検索ボタンをクリック...")
+            # ページ遷移を確実に待つためにclickとwait_for_navigationを併用
+            with page.expect_navigation(wait_until="networkidle"):
+                page.click("#btn-go")
+
+            print("5. カレンダー展開チェック...")
+            # カレンダーが隠れている場合（スマホ版表示など）を考慮し、展開ボタンがあれば押す
+            toggle_btn = page.query_selector(".span-icon-down")
+            if toggle_btn:
+                toggle_btn.click()
+                print("   - 展開ボタンをクリックしました")
+                page.wait_for_timeout(2000)
+
+            # アイコンが出るまでじっくり待機
+            print("6. 空きアイコンの読み込みを待機中...")
             try:
                 page.wait_for_selector(".calendar-status", timeout=15000)
             except:
-                print("タイムアウト：空きアイコンが見つかりませんでした。")
+                print("   - 警告: アイコンが時間内に見つかりませんでした")
 
-            # 6. カレンダー内の空き状況を解析
+            # デバッグ用：今の画面の状態をログに出す（Actionのログで文字として見れます）
+            print(f"現在表示されている月: {page.inner_text('#month-head') if page.query_selector('#month-head') else '不明'}")
+
             available_days = []
-            
-            # 日付セル（idがmonth_から始まるもの）を全取得
             cells = page.query_selector_all("td[id^='month_']")
-            
+            print(f"解析対象のセル数: {len(cells)}")
+
             for cell in cells:
-                # 画像のalt属性に「空き」という文字が含まれているかチェック
-                # 「一部空き」「空き」の両方に反応します
-                img = cell.query_selector("img[alt*='空き']")
-                if img:
-                    # id (例: month_20260529) から日付部分だけ抜き出し
-                    date_raw = cell.get_attribute("id").replace("month_", "")
-                    formatted_date = f"{date_raw[4:6]}/{date_raw[6:]}" # 05/29 形式
-                    available_days.append(formatted_date)
+                # すべての画像タグをチェックして、altに「空き」が含まれるか確認
+                imgs = cell.query_selector_all("img")
+                for img in imgs:
+                    alt_text = img.get_attribute("alt") or ""
+                    if "空き" in alt_text:
+                        date_raw = cell.get_attribute("id").replace("month_", "")
+                        formatted_date = f"{date_raw[4:6]}/{date_raw[6:]}"
+                        available_days.append(formatted_date)
+                        print(f"   - 発見: {formatted_date} ({alt_text})")
 
             return available_days
 
         except Exception as e:
-            print(f"スクレイピング中にエラーが発生しました: {e}")
+            print(f"エラー発生: {e}")
             return []
         finally:
             browser.close()
 
 if __name__ == "__main__":
-    if not LINE_CHANNEL_ACCESS_TOKEN or not USER_ID:
-        print("エラー: LINEのトークンまたはユーザーIDが設定されていません。")
+    found_days = check_park_availability()
+    if found_days:
+        date_list = "、".join(sorted(list(set(found_days))))
+        message = f"【芝公園 野球場】空き発見！\n対象日：{date_list}\nhttps://kouen.sports.metro.tokyo.lg.jp/web/index.jsp"
+        LineBotApi(LINE_CHANNEL_ACCESS_TOKEN).push_message(USER_ID, TextSendMessage(text=message))
     else:
-        found_days = check_park_availability()
-        
-        if found_days:
-            # 空きがあった場合のみ通知
-            date_list = "、".join(found_days)
-            message = f"【芝公園 野球場】空き発見！\n\n対象日：{date_list}\n\n今すぐ予約：\nhttps://kouen.sports.metro.tokyo.lg.jp/web/index.jsp"
-            
-            line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
-            line_bot_api.push_message(USER_ID, TextSendMessage(text=message))
-            print(f"通知送信完了: {date_list}")
-        else:
-            # GitHub Actionsのログで確認用
-            print("チェック完了：空きはありませんでした。")
+        # デバッグ用に「空きなし」時もログを出す
+        print("最終結果: 空きは見つかりませんでした。")
