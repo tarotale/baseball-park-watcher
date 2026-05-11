@@ -6,16 +6,15 @@ from linebot.v3.messaging import (
     Configuration, ApiClient, MessagingApi, PushMessageRequest, BroadcastRequest, TextMessage
 )
 
-# --- 環境設定（GitHub Secretsから取得） ---
+# --- 設定情報 ---
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
-DEFAULT_USER_ID = os.environ.get("USER_ID") # ShotaroさんのID
+DEFAULT_USER_ID = os.environ.get("USER_ID")
 STATUS_FILE = "last_status.txt"
 EVENT_NAME = os.environ.get("GITHUB_EVENT_NAME")
-# GASから送られてくる「宛先ID」を含むデータ
 EVENT_PAYLOAD = os.environ.get("GITHUB_EVENT_PAYLOAD")
 
 def check_park_availability():
-    """東京都公園予約サイトをスクレイピングする"""
+    """芝公園の空き状況をスクレイピング"""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
@@ -32,7 +31,6 @@ def check_park_availability():
             page.wait_for_timeout(5000)
 
             if "現在、大変混み合っております" in page.inner_text("body"):
-                print("サーバー混雑中")
                 return None
 
             print("2. 野球・芝公園を選択...")
@@ -47,7 +45,7 @@ def check_park_availability():
             page.wait_for_load_state("networkidle")
             page.wait_for_timeout(5000)
 
-            print("4. カレンダー情報を取得...")
+            print("4. カレンダー展開...")
             page.wait_for_selector("div[data-target='#monthly']", state="visible", timeout=20000)
             page.click("div[data-target='#monthly']")
             page.wait_for_selector("#month-info", timeout=20000)
@@ -72,38 +70,31 @@ def check_park_availability():
                         continue
             return current_slots
         except Exception as e:
-            print(f"スクレイピング失敗: {e}")
+            print(f"エラー: {e}")
             return None
         finally:
             browser.close()
 
 if __name__ == "__main__":
-    if not LINE_CHANNEL_ACCESS_TOKEN or not DEFAULT_USER_ID:
-        print("必要な環境変数が設定されていません。")
-        exit(1)
-
-    # --- 宛先決定の徹底ロジック ---
+    # 宛先判定の初期化
     target_user_id = DEFAULT_USER_ID
     is_line_request = False
-
+    
+    # GASからのバトンパス(client_payload)を確認
     if EVENT_PAYLOAD:
         try:
-            # GASからの client_payload を解析
             payload_data = json.loads(EVENT_PAYLOAD)
-            # 送信元ユーザーID(reply_user_id)があれば、それを宛先にする
             if "reply_user_id" in payload_data:
                 target_user_id = payload_data["reply_user_id"]
                 is_line_request = True
-                print(f"LINEからのリクエストを受信。宛先ID: {target_user_id}")
-        except Exception as e:
-            print(f"ペイロード解析失敗: {e}")
+        except:
+            pass
 
-    # スクレイピング実行
     current_slots = check_park_availability()
     if current_slots is None:
         exit(1)
 
-    # 差分チェック
+    # 差分用履歴の読み込み
     if os.path.exists(STATUS_FILE):
         with open(STATUS_FILE, "r", encoding="utf-8") as f:
             last_slots = f.read().splitlines()
@@ -116,33 +107,33 @@ if __name__ == "__main__":
     with open(STATUS_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(current_slots))
 
-    # 要件：LINEリクエストなら全件、自動なら新着のみ
-    target_slots = current_slots if is_line_request else new_slots
+    # --- 送信判定 ---
+    configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
 
-    if target_slots:
-        title = "【現在の空き状況】" if is_line_request else "【新着空き！】"
-        info_list = "、".join(sorted(list(set(target_slots))))
-        message_text = f"{title}\n\n対象枠：\n{info_list}\n\nhttps://kouen.sports.metro.tokyo.lg.jp/web/index.jsp"
-        
-        try:
-            configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
-            with ApiClient(configuration) as api_client:
-                line_bot_api = MessagingApi(api_client)
-                
-                if is_line_request:
-                    # 「確認」と送った本人にだけPush通知
-                    line_bot_api.push_message(PushMessageRequest(
-                        to=target_user_id,
-                        messages=[TextMessage(text=message_text)]
-                    ))
-                    print("個別返信を送信しました。")
-                else:
-                    # 自動実行（差分あり）なら全員に一斉送信
-                    line_bot_api.broadcast(BroadcastRequest(
-                        messages=[TextMessage(text=message_text)]
-                    ))
-                    print("一斉送信を完了しました。")
-        except Exception as e:
-            print(f"LINE送信エラー: {e}")
-    else:
-        print("通知の必要なし（空きなし or 差分なし）")
+        if is_line_request:
+            # LINEで「確認」と言われた場合は、空きがなくても必ず返信する
+            if not current_slots:
+                msg = "【現在の空き状況】\n\n現在、空き枠はありません。"
+            else:
+                info_list = "、".join(sorted(list(set(current_slots))))
+                msg = f"【現在の空き状況】\n\n対象枠：\n{info_list}\n\nhttps://kouen.sports.metro.tokyo.lg.jp/web/index.jsp"
+            
+            line_bot_api.push_message(PushMessageRequest(
+                to=target_user_id,
+                messages=[TextMessage(text=msg)]
+            ))
+            print(f"個別返信完了: {target_user_id}")
+
+        elif new_slots:
+            # 30分おきの自動実行で「新着」がある場合のみ全員に送信
+            info_list = "、".join(sorted(list(set(new_slots))))
+            msg = f"【新着空き！】\n\n対象枠：\n{info_list}\n\nhttps://kouen.sports.metro.tokyo.lg.jp/web/index.jsp"
+            
+            line_bot_api.broadcast(BroadcastRequest(
+                messages=[TextMessage(text=msg)]
+            ))
+            print("一斉送信完了")
+        else:
+            print("通知の必要なし（自動実行かつ新着なし）")
