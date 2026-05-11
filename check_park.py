@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 from linebot.v3.messaging import (
@@ -12,14 +13,13 @@ DEFAULT_USER_ID = os.environ.get("USER_ID")
 STATUS_FILE = "last_status.txt"
 EVENT_PAYLOAD = os.environ.get("GITHUB_EVENT_PAYLOAD")
 
-# ★監視したい公園のリスト
+# ★監視したい公園のリスト（セレクトボックスの表示名と一致させる）
 TARGET_PARKS = ["芝公園", "砧公園", "上野恩賜公園", "東綾瀬公園", "大井ふ頭海浜公園Ａ", "大井ふ頭海浜公園Ｂ"]
 
 def get_park_slots(page, park_name):
-    """特定の公園の空き状況を取得する内部関数"""
+    """特定の公園の空き状況を取得する"""
     try:
         print(f"--- {park_name} を確認中 ---")
-        # トップに戻る
         page.goto("https://kouen.sports.metro.tokyo.lg.jp/web/index.jsp", wait_until="commit")
         page.wait_for_timeout(3000)
 
@@ -57,7 +57,7 @@ def get_park_slots(page, park_name):
                     week_label = weeks[date_obj.weekday()]
                     formatted_date = f"{date_raw[4:6]}/{date_raw[6:]}({week_label})"
                     status_symbol = "○" if alt_text == "空き" else "▲"
-                    # どの公園の空きか分かるように公園名を付ける
+                    # 「【公園名】日付」の形式で一時保存
                     slots.append(f"【{park_name}】{formatted_date}{status_symbol}")
                 except:
                     continue
@@ -65,6 +65,33 @@ def get_park_slots(page, park_name):
     except Exception as e:
         print(f"{park_name} の取得中にエラー: {e}")
         return []
+
+def format_message(slots_list, title_prefix):
+    """取得したスロットを公園ごとにグループ化して整形する"""
+    if not slots_list:
+        return f"{title_prefix}\n\n現在、空き枠はありません。"
+    
+    grouped_slots = {}
+    for item in slots_list:
+        # 正規表現で「【公園名】」と「日付」に分ける
+        match = re.match(r"【(.*?)】(.*)", item)
+        if match:
+            p_name, p_date = match.groups()
+            if p_name not in grouped_slots:
+                grouped_slots[p_name] = []
+            grouped_slots[p_name].append(p_date)
+
+    # メッセージ組み立て
+    msg_parts = [title_prefix]
+    for p_name in TARGET_PARKS: # 指定した公園順に並べる
+        if p_name in grouped_slots:
+            p_dates = grouped_slots[p_name]
+            # 日付順にソートして「、」で結合
+            sorted_dates = sorted(list(set(p_dates)))
+            msg_parts.append(f"\n【{p_name}】\n" + "、".join(sorted_dates))
+    
+    msg_parts.append("\nhttps://kouen.sports.metro.tokyo.lg.jp/web/index.jsp")
+    return "\n".join(msg_parts)
 
 def main():
     all_current_slots = []
@@ -78,11 +105,10 @@ def main():
         )
         page = context.new_page()
 
-        # リストにある全公園をループで回す
         for park in TARGET_PARKS:
             slots = get_park_slots(page, park)
             all_current_slots.extend(slots)
-            page.wait_for_timeout(2000) # サーバー負荷軽減のため少し待つ
+            page.wait_for_timeout(2000)
 
         browser.close()
 
@@ -92,7 +118,7 @@ def main():
     if EVENT_PAYLOAD:
         try:
             payload_data = json.loads(EVENT_PAYLOAD)
-            if "reply_user_id" in payload_data:
+            if payload_data and "reply_user_id" in payload_data:
                 target_user_id = payload_data["reply_user_id"]
                 is_line_request = True
         except:
@@ -107,21 +133,33 @@ def main():
 
     new_slots = [slot for slot in all_current_slots if slot not in last_slots]
 
-    # 状態保存
+    # 今回の状態を保存
     with open(STATUS_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(all_current_slots))
 
-    # --- 送信 ---
+    # --- 送信実行 ---
     configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
         if is_line_request:
-            msg = "【現在の空き状況】\n\n" + ("\n".join(all_current_slots) if all_current_slots else "空き枠はありません。")
-            line_bot_api.push_message(PushMessageRequest(to=target_user_id, messages=[TextMessage(text=msg[:4900])]))
+            # LINEで「確認」と言われた時（全件表示）
+            msg = format_message(all_current_slots, "【現在の空き状況】")
+            line_bot_api.push_message(PushMessageRequest(
+                to=target_user_id,
+                messages=[TextMessage(text=msg[:4900])]
+            ))
+            print(f"個別返信完了: {target_user_id}")
+
         elif new_slots:
-            msg = "【新着空き！】\n\n" + "\n".join(new_slots)
-            line_bot_api.broadcast(BroadcastRequest(messages=[TextMessage(text=msg[:4900])]))
+            # 30分おきの自動実行で「新着」がある時
+            msg = format_message(new_slots, "【新着空き！】")
+            line_bot_api.broadcast(BroadcastRequest(
+                messages=[TextMessage(text=msg[:4900])]
+            ))
+            print("一斉送信完了")
+        else:
+            print("通知の必要なし")
 
 if __name__ == "__main__":
     main()
