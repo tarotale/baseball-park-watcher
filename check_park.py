@@ -23,22 +23,20 @@ def check_park_availability():
             page.goto("https://kouen.sports.metro.tokyo.lg.jp/web/index.jsp", wait_until="networkidle", timeout=60000)
 
             print("2. 目的（野球）を選択...")
-            # IDではなく、表示されているテキストで選択（より確実）
-            page.wait_for_selector("select#purpose-home", timeout=20000)
-            page.select_option("select#purpose-home", label="野球")
-            
-            # 選択後の連動待ち
-            page.wait_for_timeout(2000)
+            page.wait_for_selector("#purpose-home", timeout=20000)
+            page.select_option("#purpose-home", label="野球")
+            page.wait_for_timeout(2000) # プルダウン連動待ち
 
             print("3. 公園（芝公園）を選択...")
-            page.wait_for_selector("select#bname-home", timeout=20000)
-            page.select_option("select#bname-home", label="芝公園")
-            page.wait_for_timeout(2000)
+            page.wait_for_selector("#bname-home", timeout=20000)
+            page.select_option("#bname-home", label="芝公園")
+            page.wait_for_timeout(2000) # 反映待ち
 
             print("4. 検索実行...")
-            # 「検索する」ボタンのテキストを狙い撃ち
-            search_button = page.get_by_role("button", name="検索する")
-            search_button.click()
+            # IDでボタンが「見える」まで待つ
+            page.wait_for_selector("#btn-go", state="visible", timeout=20000)
+            # 強制的にクリック（他の要素に隠れていても実行する）
+            page.click("#btn-go", force=True)
             
             print("5. 画面遷移を待機中...")
             page.wait_for_load_state("networkidle")
