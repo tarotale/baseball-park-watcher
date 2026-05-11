@@ -1,32 +1,33 @@
 name: Park Monitor
 on:
   schedule:
-    - cron: '*/30 * * * *' # 30分おき
+    - cron: '*/30 * * * *'
   workflow_dispatch:
+  repository_dispatch: # LINE（GAS）からの合図を受け取る
+    types: [line_check]
 
 permissions:
-  contents: write # ファイル保存を許可
+  contents: write
 
 jobs:
   run-checker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-          
       - name: Install dependencies
         run: |
           pip install playwright line-bot-sdk
           playwright install chromium
-          
       - name: Execute script
         env:
           LINE_ACCESS_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
           USER_ID: ${{ secrets.USER_ID }}
+          # 自分が実行されている理由（イベント名）をPythonに伝える
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: python check_park.py
 
       - name: Commit and push changes
@@ -34,5 +35,5 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add last_status.txt
-          git commit -m "Update last status" || exit 0 # 差分がない場合は何もしない
+          git commit -m "Update last status" || exit 0
           git push
