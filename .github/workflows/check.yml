@@ -27,8 +27,8 @@ jobs:
           LINE_ACCESS_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
           USER_ID: ${{ secrets.USER_ID }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-          # ↓ここが「json(github.event.client_payload)」になっている必要があります
-          GITHUB_EVENT_PAYLOAD: ${{ json(github.event.client_payload) }}
+          # ↓このように修正（toJSON関数を使用し、全体をクォートで囲む）
+          GITHUB_EVENT_PAYLOAD: "${{ toJSON(github.event.client_payload) }}"
         run: python check_park.py
 
       - name: Commit and push changes
