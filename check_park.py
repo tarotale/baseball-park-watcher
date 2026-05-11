@@ -47,6 +47,17 @@ def check_park_availability():
 if __name__ == "__main__":
     try:
         days = check_park_availability()
+        # テスト送信：空きがあってもなくてもLINEを送る設定
+        if days:
+            message = "【空き発見】\n" + "\n".join(days)
+        else:
+            message = "チェック完了：現在は空きがありませんでした。"
+            
+        LineBotApi(LINE_CHANNEL_ACCESS_TOKEN).push_message(USER_ID, TextSendMessage(text=message))
+        print("LINE送信を試みました。")
+    except Exception as e:
+        print(f"Error: {e}")
+        days = check_park_availability()
         if days:
             message = "【芝公園 野球場】空きが出ました！\n\n" + "\n".join(days)
             LineBotApi(LINE_CHANNEL_ACCESS_TOKEN).push_message(USER_ID, TextSendMessage(text=message))
