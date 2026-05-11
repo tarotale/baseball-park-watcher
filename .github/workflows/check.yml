@@ -22,12 +22,13 @@ jobs:
         run: |
           pip install playwright line-bot-sdk
           playwright install chromium
-      - name: Execute script
+      - name: Run script
         env:
           LINE_ACCESS_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
           USER_ID: ${{ secrets.USER_ID }}
-          # 自分が実行されている理由（イベント名）をPythonに伝える
           GITHUB_EVENT_NAME: ${{ github.event_name }}
+          # ↓ここが「json(github.event.client_payload)」になっている必要があります
+          GITHUB_EVENT_PAYLOAD: ${{ json(github.event.client_payload) }}
         run: python check_park.py
 
       - name: Commit and push changes
