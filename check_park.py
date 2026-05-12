@@ -13,7 +13,7 @@ DEFAULT_USER_ID = os.environ.get("USER_ID")
 STATUS_FILE = "last_status.txt"
 EVENT_PAYLOAD = os.environ.get("GITHUB_EVENT_PAYLOAD")
 
-# ★監視したい公園のリスト（セレクトボックスの表示名と一致させる）
+# ★監視したい公園のリスト
 TARGET_PARKS = ["芝公園", "砧公園", "上野恩賜公園", "東綾瀬公園", "大井ふ頭海浜公園Ａ", "大井ふ頭海浜公園Ｂ"]
 
 def get_park_slots(page, park_name):
@@ -23,24 +23,27 @@ def get_park_slots(page, park_name):
         page.goto("https://kouen.sports.metro.tokyo.lg.jp/web/index.jsp", wait_until="commit")
         page.wait_for_timeout(3000)
 
-        # 野球を選択
+        # 1. 種目「野球」を選択
         page.wait_for_selector("#purpose-home")
         page.select_option("#purpose-home", label="野球")
-        page.wait_for_timeout(1000)
-
-        # 公園名を選択
-        page.wait_for_selector("#bname-home")
+        
+        # 2. 【重要】公園名セレクトボックスが「有効(Enabled)」になるまで待機
+        # 種目を選んだ後の読み込み待ちを解決します
+        page.wait_for_selector("#bname-home:not([disabled])", timeout=20000)
+        page.wait_for_timeout(2000) # 念押しの待機
+        
+        # 3. 公園名を選択
         page.select_option("#bname-home", label=park_name)
         page.wait_for_timeout(1000)
 
-        # 検索実行
+        # 4. 検索実行
         page.click("#btn-go")
         page.wait_for_load_state("networkidle")
         
-        # カレンダー表示
+        # 5. カレンダー表示
         page.wait_for_selector("div[data-target='#monthly']", state="visible", timeout=15000)
         page.click("div[data-target='#monthly']")
-        page.wait_for_selector("#month-info", timeout=15000)
+        page.wait_for_selector("#month-info", timeout=20000)
         page.wait_for_timeout(2000)
 
         slots = []
@@ -57,7 +60,6 @@ def get_park_slots(page, park_name):
                     week_label = weeks[date_obj.weekday()]
                     formatted_date = f"{date_raw[4:6]}/{date_raw[6:]}({week_label})"
                     status_symbol = "○" if alt_text == "空き" else "▲"
-                    # 「【公園名】日付」の形式で一時保存
                     slots.append(f"【{park_name}】{formatted_date}{status_symbol}")
                 except:
                     continue
@@ -73,7 +75,6 @@ def format_message(slots_list, title_prefix):
     
     grouped_slots = {}
     for item in slots_list:
-        # 正規表現で「【公園名】」と「日付」に分ける
         match = re.match(r"【(.*?)】(.*)", item)
         if match:
             p_name, p_date = match.groups()
@@ -81,12 +82,10 @@ def format_message(slots_list, title_prefix):
                 grouped_slots[p_name] = []
             grouped_slots[p_name].append(p_date)
 
-    # メッセージ組み立て
     msg_parts = [title_prefix]
-    for p_name in TARGET_PARKS: # 指定した公園順に並べる
+    for p_name in TARGET_PARKS:
         if p_name in grouped_slots:
             p_dates = grouped_slots[p_name]
-            # 日付順にソートして「、」で結合
             sorted_dates = sorted(list(set(p_dates)))
             msg_parts.append(f"\n【{p_name}】\n" + "、".join(sorted_dates))
     
@@ -143,23 +142,16 @@ def main():
         line_bot_api = MessagingApi(api_client)
 
         if is_line_request:
-            # LINEで「確認」と言われた時（全件表示）
             msg = format_message(all_current_slots, "【現在の空き状況】")
             line_bot_api.push_message(PushMessageRequest(
                 to=target_user_id,
                 messages=[TextMessage(text=msg[:4900])]
             ))
-            print(f"個別返信完了: {target_user_id}")
-
         elif new_slots:
-            # 30分おきの自動実行で「新着」がある時
             msg = format_message(new_slots, "【新着空き！】")
             line_bot_api.broadcast(BroadcastRequest(
                 messages=[TextMessage(text=msg[:4900])]
             ))
-            print("一斉送信完了")
-        else:
-            print("通知の必要なし")
 
 if __name__ == "__main__":
     main()
