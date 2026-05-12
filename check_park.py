@@ -13,60 +13,72 @@ DEFAULT_USER_ID = os.environ.get("USER_ID")
 STATUS_FILE = "last_status.txt"
 EVENT_PAYLOAD = os.environ.get("GITHUB_EVENT_PAYLOAD")
 
-# ★監視したい公園のリスト
 TARGET_PARKS = ["芝公園", "砧公園", "上野恩賜公園", "東綾瀬公園", "大井ふ頭海浜公園Ａ", "大井ふ頭海浜公園Ｂ"]
 
 def get_park_slots(page, park_name):
-    """特定の公園の空き状況を取得する"""
-    try:
-        print(f"--- {park_name} を確認中 ---")
-        page.goto("https://kouen.sports.metro.tokyo.lg.jp/web/index.jsp", wait_until="commit")
-        page.wait_for_timeout(3000)
+    """特定の公園の空き状況を取得する（リトライ機能付き）"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            print(f"--- {park_name} を確認中 (試行 {attempt + 1}/{max_retries}) ---")
+            page.goto("https://kouen.sports.metro.tokyo.lg.jp/web/index.jsp", wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(3000)
 
-        # 1. 種目「野球」を選択
-        page.wait_for_selector("#purpose-home")
-        page.select_option("#purpose-home", label="野球")
-        
-        # 2. 【重要】公園名セレクトボックスが「有効(Enabled)」になるまで待機
-        # 種目を選んだ後の読み込み待ちを解決します
-        page.wait_for_selector("#bname-home:not([disabled])", timeout=20000)
-        page.wait_for_timeout(2000) # 念押しの待機
-        
-        # 3. 公園名を選択
-        page.select_option("#bname-home", label=park_name)
-        page.wait_for_timeout(1000)
+            # 1. 種目「野球」を選択
+            page.wait_for_selector("#purpose-home")
+            page.select_option("#purpose-home", label="野球")
+            
+            # 2. 公園リストが有効になるまで少し待つ
+            # 安定させるため、固定待機と状態確認を組み合わせます
+            page.wait_for_timeout(3000)
+            
+            # 公園名を選択できるかチェック
+            park_select = page.locator("#bname-home")
+            if park_select.is_disabled():
+                print(f"  [警告] 公園リストがまだ無効です。再試行します...")
+                continue
+            
+            # 3. 公園名を選択
+            page.select_option("#bname-home", label=park_name)
+            page.wait_for_timeout(1000)
 
-        # 4. 検索実行
-        page.click("#btn-go")
-        page.wait_for_load_state("networkidle")
-        
-        # 5. カレンダー表示
-        page.wait_for_selector("div[data-target='#monthly']", state="visible", timeout=15000)
-        page.click("div[data-target='#monthly']")
-        page.wait_for_selector("#month-info", timeout=20000)
-        page.wait_for_timeout(2000)
+            # 4. 検索実行
+            page.click("#btn-go")
+            page.wait_for_load_state("networkidle")
+            
+            # 5. カレンダー表示
+            # ここも「1ヶ月」ボタンが出るまでしっかり待つ
+            page.wait_for_selector("div[data-target='#monthly']", state="visible", timeout=20000)
+            page.click("div[data-target='#monthly']")
+            page.wait_for_selector("#month-info", timeout=20000)
+            page.wait_for_timeout(2000)
 
-        slots = []
-        weeks = ['月', '火', '水', '木', '金', '土', '日']
-        cells = page.query_selector_all("#month-info td[id^='month_']")
-        
-        for cell in cells:
-            img = cell.query_selector("img[alt*='空き']")
-            if img:
-                alt_text = img.get_attribute("alt")
-                date_raw = cell.get_attribute("id").replace("month_", "")
-                try:
-                    date_obj = datetime.strptime(date_raw, '%Y%m%d')
-                    week_label = weeks[date_obj.weekday()]
-                    formatted_date = f"{date_raw[4:6]}/{date_raw[6:]}({week_label})"
-                    status_symbol = "○" if alt_text == "空き" else "▲"
-                    slots.append(f"【{park_name}】{formatted_date}{status_symbol}")
-                except:
-                    continue
-        return slots
-    except Exception as e:
-        print(f"{park_name} の取得中にエラー: {e}")
-        return []
+            slots = []
+            weeks = ['月', '火', '水', '木', '金', '土', '日']
+            cells = page.query_selector_all("#month-info td[id^='month_']")
+            
+            for cell in cells:
+                img = cell.query_selector("img[alt*='空き']")
+                if img:
+                    alt_text = img.get_attribute("alt")
+                    date_raw = cell.get_attribute("id").replace("month_", "")
+                    try:
+                        date_obj = datetime.strptime(date_raw, '%Y%m%d')
+                        week_label = weeks[date_obj.weekday()]
+                        formatted_date = f"{date_raw[4:6]}/{date_raw[6:]}({week_label})"
+                        status_symbol = "○" if alt_text == "空き" else "▲"
+                        slots.append(f"【{park_name}】{formatted_date}{status_symbol}")
+                    except:
+                        continue
+            
+            print(f"  [成功] {len(slots)}件の空きが見つかりました")
+            return slots
+
+        except Exception as e:
+            print(f"  [エラー] {park_name} の取得中に問題発生: {e}")
+            if attempt == max_retries - 1:
+                return []
+            page.wait_for_timeout(5000) # 次のリトライまで少し置く
 
 def format_message(slots_list, title_prefix):
     """取得したスロットを公園ごとにグループ化して整形する"""
@@ -116,14 +128,14 @@ def main():
     is_line_request = False
     if EVENT_PAYLOAD:
         try:
-            payload_data = json.loads(EVENT_PAYLOAD)
+            # GITHUB_EVENT_PAYLOADが文字列で来る場合を考慮
+            payload_data = EVENT_PAYLOAD if isinstance(EVENT_PAYLOAD, dict) else json.loads(EVENT_PAYLOAD)
             if payload_data and "reply_user_id" in payload_data:
                 target_user_id = payload_data["reply_user_id"]
                 is_line_request = True
         except:
             pass
 
-    # 差分チェック
     if os.path.exists(STATUS_FILE):
         with open(STATUS_FILE, "r", encoding="utf-8") as f:
             last_slots = f.read().splitlines()
@@ -131,27 +143,19 @@ def main():
         last_slots = []
 
     new_slots = [slot for slot in all_current_slots if slot not in last_slots]
-
-    # 今回の状態を保存
     with open(STATUS_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(all_current_slots))
 
-    # --- 送信実行 ---
+    # --- LINE送信 ---
     configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
-
         if is_line_request:
             msg = format_message(all_current_slots, "【現在の空き状況】")
-            line_bot_api.push_message(PushMessageRequest(
-                to=target_user_id,
-                messages=[TextMessage(text=msg[:4900])]
-            ))
+            line_bot_api.push_message(PushMessageRequest(to=target_user_id, messages=[TextMessage(text=msg[:4900])]))
         elif new_slots:
             msg = format_message(new_slots, "【新着空き！】")
-            line_bot_api.broadcast(BroadcastRequest(
-                messages=[TextMessage(text=msg[:4900])]
-            ))
+            line_bot_api.broadcast(BroadcastRequest(messages=[TextMessage(text=msg[:4900])]))
 
 if __name__ == "__main__":
     main()
