@@ -29,7 +29,6 @@ def get_park_slots(page, park_name):
             page.select_option("#purpose-home", label="野球")
             
             # 2. 公園リストが有効になるまで少し待つ
-            # 安定させるため、固定待機と状態確認を組み合わせます
             page.wait_for_timeout(3000)
             
             # 公園名を選択できるかチェック
@@ -44,13 +43,13 @@ def get_park_slots(page, park_name):
 
             # 4. 検索実行
             page.click("#btn-go")
-            page.wait_for_load_state("networkidle")
             
-            # 5. カレンダー表示
-            # ここも「1ヶ月」ボタンが出るまでしっかり待つ
-            page.wait_for_selector("div[data-target='#monthly']", state="visible", timeout=20000)
+            # 5. 【修正箇所】カレンダー表示ボタンが「見える」まで待ってからクリック
+            page.wait_for_selector("div[data-target='#monthly']", state="visible", timeout=30000)
             page.click("div[data-target='#monthly']")
-            page.wait_for_selector("#month-info", timeout=20000)
+            
+            # 6. 【修正箇所】カレンダー(table)が「隠れていない(visible)」状態になるまで最大30秒待つ
+            page.wait_for_selector("#month-info", state="visible", timeout=30000)
             page.wait_for_timeout(2000)
 
             slots = []
@@ -78,7 +77,7 @@ def get_park_slots(page, park_name):
             print(f"  [エラー] {park_name} の取得中に問題発生: {e}")
             if attempt == max_retries - 1:
                 return []
-            page.wait_for_timeout(5000) # 次のリトライまで少し置く
+            page.wait_for_timeout(5000)
 
 def format_message(slots_list, title_prefix):
     """取得したスロットを公園ごとにグループ化して整形する"""
@@ -128,7 +127,6 @@ def main():
     is_line_request = False
     if EVENT_PAYLOAD:
         try:
-            # GITHUB_EVENT_PAYLOADが文字列で来る場合を考慮
             payload_data = EVENT_PAYLOAD if isinstance(EVENT_PAYLOAD, dict) else json.loads(EVENT_PAYLOAD)
             if payload_data and "reply_user_id" in payload_data:
                 target_user_id = payload_data["reply_user_id"]
