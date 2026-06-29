@@ -44,11 +44,11 @@ def get_park_slots(page, park_name):
             # 4. 検索実行
             page.click("#btn-go")
             
-            # 5. 【修正箇所】カレンダー表示ボタンが「見える」まで待ってからクリック
+            # 5. カレンダー表示ボタンが「見える」まで待ってからクリック
             page.wait_for_selector("div[data-target='#monthly']", state="visible", timeout=30000)
             page.click("div[data-target='#monthly']")
             
-            # 6. 【修正箇所】カレンダー(table)が「隠れていない(visible)」状態になるまで最大30秒待つ
+            # 6. カレンダー(table)が「隠れていない(visible)」状態になるまで最大30秒待つ
             page.wait_for_selector("#month-info", state="visible", timeout=30000)
             page.wait_for_timeout(2000)
 
@@ -144,16 +144,22 @@ def main():
     with open(STATUS_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(all_current_slots))
 
-    # --- LINE送信 ---
+    # --- LINE送信（ここに対策が入っています） ---
     configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
-        if is_line_request:
-            msg = format_message(all_current_slots, "【現在の空き状況】")
-            line_bot_api.push_message(PushMessageRequest(to=target_user_id, messages=[TextMessage(text=msg[:4900])]))
-        elif new_slots:
-            msg = format_message(new_slots, "【新着空き！】")
-            line_bot_api.broadcast(BroadcastRequest(messages=[TextMessage(text=msg[:4900])]))
+        try:
+            if is_line_request:
+                msg = format_message(all_current_slots, "【現在の空き状況】")
+                line_bot_api.push_message(PushMessageRequest(to=target_user_id, messages=[TextMessage(text=msg[:4900])]))
+                print("個別返信の送信に成功しました。")
+            elif new_slots:
+                msg = format_message(new_slots, "【新着空き！】")
+                line_bot_api.broadcast(BroadcastRequest(messages=[TextMessage(text=msg[:4900])]))
+                print("新着通知（一斉送信）に成功しました。")
+        except Exception as line_error:
+            # ★ LINE送信でエラー（上限到達など）が起きても、ここでエラーをキャッチして安全にスルーします
+            print(f"[警告] LINE送信中にエラーが発生しました（上限到達の可能性があります）: {line_error}")
 
 if __name__ == "__main__":
     main()
